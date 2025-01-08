@@ -21,51 +21,83 @@ logging.getLogger("httpx").setLevel(logging.DEBUG)
 # 加载环境变量
 load_dotenv()
 
-def parse_model_config():
-    """
-    从环境变量解析模型配置
-    返回一个字典 {model_name: api_key}
-    """
-    try:
-        config_str = os.getenv('MODEL_CONFIG', '{}')
-        # 尝试作为Python字典解析
+class DifyModelManager:
+    def __init__(self):
+        self.api_keys = []
+        self.name_to_api_key = {}  # 应用名称到API Key的映射
+        self.api_key_to_name = {}  # API Key到应用名称的映射
+        self.load_api_keys()
+
+    def load_api_keys(self):
+        """从环境变量加载API Keys"""
+        api_keys_str = os.getenv('DIFY_API_KEYS', '')
+        if api_keys_str:
+            self.api_keys = [key.strip() for key in api_keys_str.split(',') if key.strip()]
+            logger.info(f"Loaded {len(self.api_keys)} API keys")
+
+    async def fetch_app_info(self, api_key):
+        """获取Dify应用信息"""
         try:
-            return ast.literal_eval(config_str)
-        except (SyntaxError, ValueError) as e:
-            logger.error(f"Failed to parse MODEL_CONFIG as Python dict: {e}")
-            try:
-                # 尝试作为JSON解析
-                return json.loads(config_str)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse MODEL_CONFIG as JSON: {e}")
-                return {}
-    except Exception as e:
-        logger.error(f"Error parsing MODEL_CONFIG: {e}")
-        return {}
+            async with httpx.AsyncClient() as client:
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                response = await client.get(
+                    f"{DIFY_API_BASE}/info",
+                    headers=headers,
+                    params={"user": "default_user"}
+                )
+                
+                if response.status_code == 200:
+                    app_info = response.json()
+                    return app_info.get("name", "Unknown App")
+                else:
+                    logger.error(f"Failed to fetch app info for API key: {api_key[:8]}...")
+                    return None
+        except Exception as e:
+            logger.error(f"Error fetching app info: {str(e)}")
+            return None
 
-# 从环境变量获取配置
-MODEL_TO_API_KEY = parse_model_config()
+    async def refresh_model_info(self):
+        """刷新所有应用信息"""
+        self.name_to_api_key.clear()
+        self.api_key_to_name.clear()
+        
+        for api_key in self.api_keys:
+            app_name = await self.fetch_app_info(api_key)
+            if app_name:
+                self.name_to_api_key[app_name] = api_key
+                self.api_key_to_name[api_key] = app_name
+                logger.info(f"Mapped app '{app_name}' to API key: {api_key[:8]}...")
 
-# 根据MODEL_TO_API_KEY自动生成模型信息
-AVAILABLE_MODELS = [
-    {
-        "id": model_id,
-        "object": "model",
-        "created": int(time.time()),
-        "owned_by": "dify"
-    }
-    for model_id, api_key in MODEL_TO_API_KEY.items()
-    if api_key is not None  # 只包含配置了API Key的模型
-]
+    def get_api_key(self, model_name):
+        """根据模型名称获取API Key"""
+        return self.name_to_api_key.get(model_name)
 
-app = Flask(__name__)
+    def get_available_models(self):
+        """获取可用模型列表"""
+        return [
+            {
+                "id": name,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "dify"
+            }
+            for name in self.name_to_api_key.keys()
+        ]
+
+# 创建模型管理器实例
+model_manager = DifyModelManager()
 
 # 从环境变量获取API基础URL
 DIFY_API_BASE = os.getenv("DIFY_API_BASE", "https://mify-be.pt.xiaomi.com/api/v1")
 
+app = Flask(__name__)
+
 def get_api_key(model_name):
     """根据模型名称获取对应的API密钥"""
-    api_key = MODEL_TO_API_KEY.get(model_name)
+    api_key = model_manager.get_api_key(model_name)
     if not api_key:
         logger.warning(f"No API key found for model: {model_name}")
     return api_key
@@ -149,7 +181,7 @@ def chat_completions():
         # 验证模型是否支持
         api_key = get_api_key(model)
         if not api_key:
-            error_msg = f"Model {model} is not supported. Available models: {', '.join(MODEL_TO_API_KEY.keys())}"
+            error_msg = f"Model {model} is not supported. Available models: {', '.join(model_manager.name_to_api_key.keys())}"
             logger.error(error_msg)
             return {
                 "error": {
@@ -375,11 +407,12 @@ def chat_completions():
 def list_models():
     """返回可用的模型列表"""
     logger.info("Listing available models")
-    # 过滤掉没有API密钥的模型
-    available_models = [
-        model for model in AVAILABLE_MODELS 
-        if MODEL_TO_API_KEY.get(model["id"])
-    ]
+    
+    # 刷新模型信息
+    asyncio.run(model_manager.refresh_model_info())
+    
+    # 获取可用模型列表
+    available_models = model_manager.get_available_models()
     
     response = {
         "object": "list",
@@ -389,6 +422,9 @@ def list_models():
     return response
 
 if __name__ == '__main__':
+    # 启动时初始化模型信息
+    asyncio.run(model_manager.refresh_model_info())
+    
     host = os.getenv("SERVER_HOST", "127.0.0.1")
     port = int(os.getenv("SERVER_PORT", 5000))
     logger.info(f"Starting server on http://{host}:{port}")

@@ -12,11 +12,11 @@ OpenDify 是一个将 Dify API 转换为 OpenAI API 格式的代理服务器。�
 - 支持多个模型配置
 - 完整的错误处理和日志记录
 - 兼容标准的 OpenAI API 客户端
-- 灵活的模型配置支持
+- 自动获取 Dify 应用信息
 
 ## 支持的模型
 
-支持任意 Dify 模型，只需在配置文件中添加对应的 API Key 即可。
+支持任意 Dify 应用，系统会自动从 Dify API 获取应用名称和信息。只需在配置文件中添加应用的 API Key 即可。
 
 ## 快速开始
 
@@ -45,13 +45,13 @@ cp .env.example .env
    - 发布应用
    - 进入"访问 API"页面，生成 API 密钥
 
-   > **重要说明**：Dify 不支持在请求时动态传入提示词、切换模型及其他参数。所有这些配置都需要在创建应用时设置好。Dify 会根据 API 密钥来确定使用哪个应用及其对应的配置。
+   > **重要说明**：Dify 不支持在请求时动态传入提示词、切换模型及其他参数。所有这些配置都需要在创建应用时设置好。Dify 会根据 API 密钥来确定使用哪个应用及其对应的配置。系统会自动从 Dify API 获取应用的名称和描述信息。
 
-3. 在 `.env` 文件中配置你的 Dify 模型和 API Keys：
+3. 在 `.env` 文件中配置你的 Dify API Keys：
 ```env
-# Dify Model Configurations
-# 注意：必须是单行的 JSON 字符串格式
-MODEL_CONFIG={"claude-3-5-sonnet-v2":"your-claude-api-key","custom-model":"your-custom-api-key"}
+# Dify API Keys Configuration
+# Format: Comma-separated list of API keys
+DIFY_API_KEYS=app-xxxxxxxx,app-yyyyyyyy,app-zzzzzzzz
 
 # Dify API Base URL
 DIFY_API_BASE="https://your-dify-api-base-url/v1"
@@ -61,16 +61,10 @@ SERVER_HOST="127.0.0.1"
 SERVER_PORT=5000
 ```
 
-你可以根据需要添加或删除模型配置，但必须保持 JSON 格式在单行内。这是因为 python-dotenv 的限制。
-
-每个模型配置的格式为：`"模型名称": "Dify应用的API密钥"`。其中：
-- 模型名称：可以自定义，用于在 API 调用时识别不同的应用
-- API 密钥：从 Dify 平台获取的应用 API 密钥
-
-例如，如果你在 Dify 上创建了一个使用 Claude 的翻译应用和一个使用 Gemini 的代码助手应用，可以这样配置：
-```env
-MODEL_CONFIG={"translator":"app-xxxxxx","code-assistant":"app-yyyyyy"}
-```
+配置说明：
+- `DIFY_API_KEYS`：以逗号分隔的 API Keys 列表，每个 Key 对应一个 Dify 应用
+- 系统会自动从 Dify API 获取每个应用的名称和信息
+- 无需手动配置模型名称和映射关系
 
 ### 运行服务
 
@@ -101,23 +95,22 @@ print(models)
     "object": "list",
     "data": [
         {
-            "id": "claude-3-5-sonnet-v2",
+            "id": "My Translation App",  # Dify 应用名称
             "object": "model",
             "created": 1704603847,
             "owned_by": "dify"
         },
         {
-            "id": "gemini-2.0-flash-thinking-exp-1219",
+            "id": "Code Assistant",  # 另一个 Dify 应用名称
             "object": "model",
             "created": 1704603847,
             "owned_by": "dify"
-        },
-        // ... 其他在 MODEL_CONFIG 中配置的模型
+        }
     ]
 }
 ```
 
-只有在 `.env` 文件的 `MODEL_CONFIG` 中配置了 API Key 的模型才会出现在列表中。
+系统会自动从 Dify API 获取应用名称，并用作模型 ID。
 
 ### Chat Completions
 
@@ -128,7 +121,7 @@ openai.api_base = "http://127.0.0.1:5000/v1"
 openai.api_key = "any"  # 可以使用任意值
 
 response = openai.ChatCompletion.create(
-    model="claude-3-5-sonnet-v2",  # 使用在 MODEL_CONFIG 中配置的模型名称
+    model="My Translation App",  # 使用 Dify 应用的名称
     messages=[
         {"role": "user", "content": "你好"}
     ],
@@ -155,9 +148,9 @@ for chunk in response:
 
 ### 配置灵活性
 
-- 支持动态添加新模型
-- 支持 JSON 格式配置
-- 支持自定义模型名称
+- 自动获取应用信息
+- 简化的配置方式
+- 动态模型名称映射
 
 ## 贡献指南
 
