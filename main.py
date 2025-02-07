@@ -91,7 +91,7 @@ class DifyModelManager:
 model_manager = DifyModelManager()
 
 # 从环境变量获取API基础URL
-DIFY_API_BASE = os.getenv("DIFY_API_BASE", "https://mify-be.pt.xiaomi.com/api/v1")
+DIFY_API_BASE = os.getenv("DIFY_API_BASE", "")
 
 app = Flask(__name__)
 
