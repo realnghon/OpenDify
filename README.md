@@ -13,6 +13,7 @@ OpenDify 是一个将 Dify API 转换为 OpenAI API 格式的代理服务器。�
 - 智能动态延迟控制，提供流畅的输出体验
 - 支持多种会话记忆模式，包括零宽字符模式和history_message模式
 - 支持多个模型配置
+- 支持Dify Agent应用，处理高级工具调用（如生成图片等）
 - 兼容标准的 OpenAI API 客户端
 - 自动获取 Dify 应用信息
 

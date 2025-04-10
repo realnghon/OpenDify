@@ -13,6 +13,7 @@ OpenDify is a proxy server that transforms the Dify API into OpenAI API format. 
 - Intelligent dynamic delay control for smooth output experience
 - Multiple conversation memory modes, including zero-width character mode and history_message mode
 - Support for multiple model configurations
+- Support for Dify Agent applications with advanced tool calls (like image generation)
 - Compatible with standard OpenAI API clients
 - Automatic fetching of Dify application information
 

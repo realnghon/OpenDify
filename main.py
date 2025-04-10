@@ -179,7 +179,22 @@ def transform_dify_to_openai(dify_response, model="claude-3-5-sonnet-v2", stream
     """将Dify格式的响应转换为OpenAI格式"""
     
     if not stream:
-        answer = dify_response.get("answer", "")
+        # 首先获取回答内容，支持不同的响应模式
+        answer = ""
+        mode = dify_response.get("mode", "")
+        
+        # 普通聊天模式
+        if "answer" in dify_response:
+            answer = dify_response.get("answer", "")
+        
+        # 如果是Agent模式，需要从agent_thoughts中提取回答
+        elif "agent_thoughts" in dify_response:
+            # Agent模式下通常最后一个thought包含最终答案
+            agent_thoughts = dify_response.get("agent_thoughts", [])
+            if agent_thoughts:
+                for thought in agent_thoughts:
+                    if thought.get("thought"):
+                        answer = thought.get("thought", "")
         
         # 只在零宽字符会话记忆模式时处理conversation_id
         if CONVERSATION_MEMORY_MODE == 2:
@@ -522,6 +537,63 @@ def chat_completions():
                                                 time.sleep(delay)
                                             
                                             # 立即继续处理下一个请求
+                                            continue
+                                        
+                                        # 处理Agent模式的消息事件
+                                        elif dify_chunk.get("event") == "agent_message" and "answer" in dify_chunk:
+                                            current_answer = dify_chunk["answer"]
+                                            if not current_answer:
+                                                continue
+                                                
+                                            message_id = dify_chunk.get("message_id", "")
+                                            if not generate.message_id:
+                                                generate.message_id = message_id
+                                            
+                                            # 将当前批次的字符添加到输出缓冲区
+                                            for char in current_answer:
+                                                output_buffer.append((char, generate.message_id))
+                                            
+                                            # 根据缓冲区大小动态调整输出速度
+                                            while output_buffer:
+                                                char, msg_id = output_buffer.pop(0)
+                                                yield send_char(char, msg_id)
+                                                # 根据剩余缓冲区大小计算延迟
+                                                delay = calculate_delay(len(output_buffer))
+                                                time.sleep(delay)
+                                            
+                                            # 立即继续处理下一个请求
+                                            continue
+                                        
+                                        # 处理Agent的思考过程，记录日志但不输出给用户
+                                        elif dify_chunk.get("event") == "agent_thought":
+                                            thought_id = dify_chunk.get("id", "")
+                                            thought = dify_chunk.get("thought", "")
+                                            tool = dify_chunk.get("tool", "")
+                                            tool_input = dify_chunk.get("tool_input", "")
+                                            observation = dify_chunk.get("observation", "")
+                                            
+                                            logger.info(f"[Agent Thought] ID: {thought_id}, Tool: {tool}")
+                                            if thought:
+                                                logger.info(f"[Agent Thought] Thought: {thought}")
+                                            if tool_input:
+                                                logger.info(f"[Agent Thought] Tool Input: {tool_input}")
+                                            if observation:
+                                                logger.info(f"[Agent Thought] Observation: {observation}")
+                                            
+                                            # 获取message_id以关联思考和最终输出
+                                            message_id = dify_chunk.get("message_id", "")
+                                            if not generate.message_id and message_id:
+                                                generate.message_id = message_id
+                                            
+                                            continue
+                                        
+                                        # 处理消息中的文件(如图片)，记录日志但不直接输出给用户
+                                        elif dify_chunk.get("event") == "message_file":
+                                            file_id = dify_chunk.get("id", "")
+                                            file_type = dify_chunk.get("type", "")
+                                            file_url = dify_chunk.get("url", "")
+                                            
+                                            logger.info(f"[Message File] ID: {file_id}, Type: {file_type}, URL: {file_url}")
                                             continue
                                         
                                         elif dify_chunk.get("event") == "message_end":
