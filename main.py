@@ -24,8 +24,11 @@ load_dotenv()
 # 从环境变量读取有效的API密钥（逗号分隔）
 VALID_API_KEYS = [key.strip() for key in os.getenv("VALID_API_KEYS", "").split(",") if key]
 
-# 获取会话ID记忆功能开关配置
-ENABLE_CONVERSATION_MEMORY = os.getenv('ENABLE_CONVERSATION_MEMORY', 'true').lower() == 'true'
+# 获取会话记忆功能模式配置
+# 0: 不开启会话记忆
+# 1: 构造history_message附加到消息中的模式
+# 2: 当前的零宽字符模式（默认）
+CONVERSATION_MEMORY_MODE = int(os.getenv('CONVERSATION_MEMORY_MODE', '2'))
 
 class DifyModelManager:
     def __init__(self):
@@ -117,23 +120,56 @@ def transform_openai_to_dify(openai_request, endpoint):
         
         # 尝试从历史消息中提取conversation_id
         conversation_id = None
-        if len(messages) > 1:
-            # 遍历历史消息，找到最近的assistant消息
-            for msg in reversed(messages[:-1]):  # 除了最后一条消息
-                if msg.get("role") == "assistant":
-                    content = msg.get("content", "")
-                    # 尝试解码conversation_id
-                    conversation_id = decode_conversation_id(content)
-                    if conversation_id:
-                        break
         
-        dify_request = {
-            "inputs": {},
-            "query": messages[-1]["content"] if messages else "",
-            "response_mode": "streaming" if stream else "blocking",
-            "conversation_id": conversation_id,
-            "user": openai_request.get("user", "default_user")
-        }
+        if CONVERSATION_MEMORY_MODE == 2:  # 零宽字符模式
+            if len(messages) > 1:
+                # 遍历历史消息，找到最近的assistant消息
+                for msg in reversed(messages[:-1]):  # 除了最后一条消息
+                    if msg.get("role") == "assistant":
+                        content = msg.get("content", "")
+                        # 尝试解码conversation_id
+                        conversation_id = decode_conversation_id(content)
+                        if conversation_id:
+                            break
+            
+            dify_request = {
+                "inputs": {},
+                "query": messages[-1]["content"] if messages else "",
+                "response_mode": "streaming" if stream else "blocking",
+                "conversation_id": conversation_id,
+                "user": openai_request.get("user", "default_user")
+            }
+        elif CONVERSATION_MEMORY_MODE == 1:  # history_message模式
+            # 使用history_messages直接作为上下文
+            user_query = messages[-1]["content"] if messages else ""
+            
+            if len(messages) > 1:
+                # 构造历史消息
+                history_messages = []
+                for msg in messages[:-1]:  # 除了最后一条消息
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if role and content:
+                        history_messages.append(f"{role}: {content}")
+                
+                # 将历史消息添加到查询中
+                if history_messages:
+                    history_context = "\n\n".join(history_messages)
+                    user_query = f"<history>\n{history_context}\n</history>\n\n用户当前问题: {user_query}"
+            
+            dify_request = {
+                "inputs": {},
+                "query": user_query,
+                "response_mode": "streaming" if stream else "blocking",
+                "user": openai_request.get("user", "default_user")
+            }
+        else:  # 不开启会话记忆
+            dify_request = {
+                "inputs": {},
+                "query": messages[-1]["content"] if messages else "",
+                "response_mode": "streaming" if stream else "blocking",
+                "user": openai_request.get("user", "default_user")
+            }
 
         return dify_request
     
@@ -145,8 +181,8 @@ def transform_dify_to_openai(dify_response, model="claude-3-5-sonnet-v2", stream
     if not stream:
         answer = dify_response.get("answer", "")
         
-        # 只在启用会话记忆功能时处理conversation_id
-        if ENABLE_CONVERSATION_MEMORY:
+        # 只在零宽字符会话记忆模式时处理conversation_id
+        if CONVERSATION_MEMORY_MODE == 2:
             conversation_id = dify_response.get("conversation_id", "")
             history = dify_response.get("conversation_history", [])
             
@@ -495,8 +531,8 @@ def chat_completions():
                                                 yield send_char(char, msg_id)
                                                 time.sleep(0.001)  # 固定使用最小延迟快速输出剩余内容
                                             
-                                            # 只在启用会话记忆功能时处理conversation_id
-                                            if ENABLE_CONVERSATION_MEMORY:
+                                            # 只在零宽字符会话记忆模式时处理conversation_id
+                                            if CONVERSATION_MEMORY_MODE == 2:
                                                 conversation_id = dify_chunk.get("conversation_id")
                                                 history = dify_chunk.get("conversation_history", [])
                                                 
