@@ -4,13 +4,15 @@ OpenDify 是一个将 Dify API 转换为 OpenAI API 格式的代理服务器。�
 
 > 🌟 本项目完全由 Cursor + Claude-3.5 自动生成，未手动编写任何代码（包括此Readme），向 AI 辅助编程的未来致敬！
 
+[English Version](README_EN.md)
+
 ## 功能特点
 
 - 完整支持 OpenAI API 格式转换为 Dify API
 - 支持流式输出（Streaming）
 - 智能动态延迟控制，提供流畅的输出体验
+- 支持多种会话记忆模式，包括零宽字符模式和history_message模式
 - 支持多个模型配置
-- 完整的错误处理和日志记录
 - 兼容标准的 OpenAI API 客户端
 - 自动获取 Dify 应用信息
 
@@ -161,12 +163,6 @@ CONVERSATION_MEMORY_MODE=2
 - 智能缓冲区管理
 - 动态延迟计算
 - 平滑的输出体验
-
-### 错误处理
-
-- 完整的错误捕获和处理
-- 详细的日志记录
-- 友好的错误提示
 
 ### 配置灵活性
 
