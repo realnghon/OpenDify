@@ -12,6 +12,7 @@ OpenDify 是一个将 Dify API 转换为 OpenAI API 格式的代理服务器。�
 - 支持流式输出（Streaming）
 - 智能动态延迟控制，提供流畅的输出体验
 - 支持多种会话记忆模式，包括零宽字符模式和history_message模式
+- 支持 OpenAI Function Call 和 MCP Server 功能
 - 支持多个模型配置
 - 支持Dify Agent应用，处理高级工具调用（如生成图片等）
 - 兼容标准的 OpenAI API 客户端
@@ -19,35 +20,49 @@ OpenDify 是一个将 Dify API 转换为 OpenAI API 格式的代理服务器。�
 
 ## 效果展示
 
+### Function Call 和 MCP Server 支持
+
+新增对 OpenAI Function Call 和 MCP Server 的支持，即使 Dify 不支持直接设置系统提示词：
+
+- 自动检测请求中的 `system` 角色消息
+- 智能将系统提示词插入到用户查询中
+- 防止重复插入系统提示词
+- 完美兼容 OpenAI 的 Function Call 格式
+
+![Function Call 支持示例](images/3.png)
+
+*上图展示了 OpenDify 对 Function Call 的支持。即使 Dify 应用不支持直接设置系统提示词，通过 OpenDify 的转换，也能正确处理 MCP Server 及 Function Call 的需求。*
+
+### Dify Agent应用支持
+
 ![Dify Agent应用截图](images/1.png)
 
 *截图展示了OpenDify代理服务支持的Dify Agent应用界面，可以看到Agent成功地处理了用户的Python多线程用法请求，并返回了相关代码示例。*
+
+### 会话记忆功能
 
 ![Dify会话记忆功能截图](images/2.png)
 
 *上图展示了OpenDify的会话记忆功能。当用户提问"今天是什么天气？"时，AI能够记住之前对话中提到"今天是晴天"的上下文信息，并给出相应回复。*
 
-## 特性
 
 ### 会话记忆功能
 
-该代理支持自动记忆会话上下文，无需客户端进行额外处理。提供了三种会话记忆模式：
+该代理支持自动记忆会话上下文，无需客户端进行额外处理。提供了两种会话记忆模式：
 
-1. **不开启会话记忆**：每次对话都是独立的，无上下文关联
-2. **history_message模式**：将历史消息直接附加到当前消息中，支持客户端编辑历史消息
-3. **零宽字符模式**：在每个新会话的第一条回复中，会自动嵌入不可见的会话ID，后续消息自动继承上下文
+1. **history_message模式**：将历史消息直接附加到当前消息中，支持客户端编辑历史消息（默认）
+2. **零宽字符模式**：在每个新会话的第一条回复中，会自动嵌入不可见的会话ID，后续消息自动继承上下文
 
 可以通过环境变量控制此功能：
 
 ```shell
 # 在 .env 文件中设置会话记忆模式
-# 0: 不开启会话记忆
-# 1: 构造history_message附加到消息中的模式
-# 2: 当前的零宽字符模式（默认）
-CONVERSATION_MEMORY_MODE=2
+# 1: 构造history_message附加到消息中的模式（默认）
+# 2: 零宽字符模式
+CONVERSATION_MEMORY_MODE=1
 ```
 
-默认情况下使用零宽字符模式。对于需要支持客户端编辑历史消息的场景，推荐使用history_message模式。
+默认情况下使用history_message模式，这种模式更灵活，支持客户端编辑历史消息，并能更好地处理系统提示词。
 
 > 注意：history_message模式会将所有历史消息追加到当前消息中，可能会消耗更多的token。
 

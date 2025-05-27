@@ -12,22 +12,42 @@ OpenDify is a proxy server that transforms the Dify API into OpenAI API format. 
 - Streaming output support
 - Intelligent dynamic delay control for smooth output experience
 - Multiple conversation memory modes, including zero-width character mode and history_message mode
+- Support for OpenAI Function Call and MCP Server functionality
 - Support for multiple model configurations
 - Support for Dify Agent applications with advanced tool calls (like image generation)
 - Compatible with standard OpenAI API clients
 - Automatic fetching of Dify application information
 
-## Screenshot
+## Screenshots
+
+### Function Call and MCP Server Support
+
+![Function Call Support Example](images/3.png)
+
+*The above image demonstrates OpenDify's support for Function Call. Even though Dify applications don't support setting system prompts directly, through OpenDify's conversion, it can correctly handle MCP Server and Function Call requirements.*
+
+### Dify Agent Application Support
 
 ![Dify Agent Application Screenshot](images/1.png)
 
 *The screenshot shows the Dify Agent application interface supported by the OpenDify proxy service. It demonstrates how the Agent successfully processes a user's request about Python multithreading usage and returns relevant code examples.*
+
+### Conversation Memory Feature
 
 ![Dify Conversation Memory Feature](images/2.png)
 
 *The above image demonstrates the conversation memory feature of OpenDify. When the user asks "What's the weather today?", the AI remembers the context from previous conversations that "today is sunny" and provides an appropriate response.*
 
 ## Detailed Features
+
+### Function Call and MCP Server Support
+
+Added support for OpenAI Function Call and MCP Server, even though Dify doesn't support setting system prompts directly:
+
+- Automatically detects `system` role messages in requests
+- Intelligently inserts system prompts into user queries
+- Prevents duplicate insertion of system prompts
+- Perfectly compatible with OpenAI Function Call format
 
 ### Conversation Memory
 

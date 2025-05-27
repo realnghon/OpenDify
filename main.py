@@ -25,10 +25,9 @@ load_dotenv()
 VALID_API_KEYS = [key.strip() for key in os.getenv("VALID_API_KEYS", "").split(",") if key]
 
 # 获取会话记忆功能模式配置
-# 0: 不开启会话记忆
-# 1: 构造history_message附加到消息中的模式
-# 2: 当前的零宽字符模式（默认）
-CONVERSATION_MEMORY_MODE = int(os.getenv('CONVERSATION_MEMORY_MODE', '2'))
+# 1: 构造history_message附加到消息中的模式(默认)
+# 2: 零宽字符模式
+CONVERSATION_MEMORY_MODE = int(os.getenv('CONVERSATION_MEMORY_MODE', '1'))
 
 class DifyModelManager:
     def __init__(self):
@@ -121,6 +120,14 @@ def transform_openai_to_dify(openai_request, endpoint):
         # 尝试从历史消息中提取conversation_id
         conversation_id = None
         
+        # 提取system消息内容
+        system_content = ""
+        system_messages = [msg for msg in messages if msg.get("role") == "system"]
+        if system_messages:
+            system_content = system_messages[0].get("content", "")
+            # 记录找到的system消息
+            logger.info(f"Found system message: {system_content[:100]}{'...' if len(system_content) > 100 else ''}")
+        
         if CONVERSATION_MEMORY_MODE == 2:  # 零宽字符模式
             if len(messages) > 1:
                 # 遍历历史消息，找到最近的assistant消息
@@ -132,41 +139,55 @@ def transform_openai_to_dify(openai_request, endpoint):
                         if conversation_id:
                             break
             
-            dify_request = {
-                "inputs": {},
-                "query": messages[-1]["content"] if messages else "",
-                "response_mode": "streaming" if stream else "blocking",
-                "conversation_id": conversation_id,
-                "user": openai_request.get("user", "default_user")
-            }
-        elif CONVERSATION_MEMORY_MODE == 1:  # history_message模式
-            # 使用history_messages直接作为上下文
-            user_query = messages[-1]["content"] if messages else ""
+            # 获取最后一条用户消息
+            user_query = messages[-1]["content"] if messages and messages[-1].get("role") != "system" else ""
             
-            if len(messages) > 1:
-                # 构造历史消息
-                history_messages = []
-                for msg in messages[:-1]:  # 除了最后一条消息
-                    role = msg.get("role", "")
-                    content = msg.get("content", "")
-                    if role and content:
-                        history_messages.append(f"{role}: {content}")
-                
-                # 将历史消息添加到查询中
-                if history_messages:
-                    history_context = "\n\n".join(history_messages)
-                    user_query = f"<history>\n{history_context}\n</history>\n\n用户当前问题: {user_query}"
+            # 如果有system消息且是首次对话(没有conversation_id)，则将system内容添加到用户查询前
+            if system_content and not conversation_id:
+                user_query = f"系统指令: {system_content}\n\n用户问题: {user_query}"
+                logger.info(f"[零宽字符模式] 首次对话，添加system内容到查询前")
             
             dify_request = {
                 "inputs": {},
                 "query": user_query,
                 "response_mode": "streaming" if stream else "blocking",
+                "conversation_id": conversation_id,
                 "user": openai_request.get("user", "default_user")
             }
-        else:  # 不开启会话记忆
+        else:  # history_message模式(默认)
+            # 获取最后一条用户消息
+            user_query = messages[-1]["content"] if messages and messages[-1].get("role") != "system" else ""
+            
+            # 构造历史消息
+            if len(messages) > 1:
+                history_messages = []
+                has_system_in_history = False
+                
+                # 检查历史消息中是否已经包含system消息
+                for msg in messages[:-1]:  # 除了最后一条消息
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if role and content:
+                        if role == "system":
+                            has_system_in_history = True
+                        history_messages.append(f"{role}: {content}")
+                
+                # 如果历史中没有system消息但现在有system消息，则添加到历史的最前面
+                if system_content and not has_system_in_history:
+                    history_messages.insert(0, f"system: {system_content}")
+                    logger.info(f"[history_message模式] 添加system内容到历史消息前")
+                
+                # 将历史消息添加到查询中
+                if history_messages:
+                    history_context = "\n\n".join(history_messages)
+                    user_query = f"<history>\n{history_context}\n</history>\n\n用户当前问题: {user_query}"
+            elif system_content:  # 没有历史消息但有system消息
+                user_query = f"系统指令: {system_content}\n\n用户问题: {user_query}"
+                logger.info(f"[history_message模式] 首次对话，添加system内容到查询前")
+            
             dify_request = {
                 "inputs": {},
-                "query": messages[-1]["content"] if messages else "",
+                "query": user_query,
                 "response_mode": "streaming" if stream else "blocking",
                 "user": openai_request.get("user", "default_user")
             }
