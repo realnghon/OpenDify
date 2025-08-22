@@ -1,4 +1,4 @@
-# FastAPI Dify 代理服务 - 性能优化版
+# OpenDify
 
 [![EN](https://img.shields.io/badge/EN-English%20Version-blue?style=flat&logo=github)](README_EN.md)
 
@@ -48,6 +48,10 @@ pip install -r requirements.txt
 
     将 `127.0.0.1` 替换为您希望监听的 Host，`1234` 替换为您希望监听的端口。
 
+## API Key 配置
+
+需要在环境变量 `VALID_API_KEYS` 中配置 Dify API Key。
+
 ## API 使用示例
 
 您可以使用以下 `test.py` 文件来验证服务是否启动成功：
@@ -80,8 +84,3 @@ for chunk in response:
 请确保将 `base_url` 修改为您的服务地址，并根据需要修改 `api_key` 和 `model` 参数。
 
 运行 `test.py` 文件，如果能够正确输出结果，则说明服务启动成功。
-```
-
-## API Key 配置
-
-需要在环境变量 `VALID_API_KEYS` 中配置 Dify API Key。
