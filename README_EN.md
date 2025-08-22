@@ -46,6 +46,10 @@ pip install -r requirements.txt
 
     Replace `127.0.0.1` with the host you want to listen on, and `1234` with the port you want to listen on.
 
+## API Key Configuration
+
+You need to configure the Dify API key in the environment variable `VALID_API_KEYS`.
+
 ## API Usage Example
 
 You can use the following `test.py` file to verify that the service has started successfully:
@@ -78,7 +82,3 @@ for chunk in response:
 Make sure to modify the `base_url` to your service address, and modify the `api_key` and `model` parameters as needed.
 
 Run the `test.py` file. If the result is output correctly, it means that the service has started successfully.
-
-## API Key Configuration
-
-You need to configure the Dify API key in the environment variable `VALID_API_KEYS`.
