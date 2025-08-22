@@ -3,7 +3,7 @@ from openai import OpenAI
 
 # 创建OpenAI客户端实例
 client = OpenAI(
-    base_url="http://127.0.0.1:1234/v1",
+    base_url="http://127.0.0.1:8000/v1",
     api_key="sk-abc123"  # 可以使用任意值
 )
 

@@ -354,11 +354,11 @@ async def stream_response(dify_request: Dict, api_key: str, model: str) -> Async
     endpoint = f"{DIFY_API_BASE}/chat-messages"
     message_id = None
 
-    # 使用高效StringIO缓冲
-    buf = io.StringIO()
-    last_flush = time.time()
-    FLUSH_THRESHOLD = 0.05  # 50ms
-    MAX_BUF_LEN = 256
+    # --- 参数区（便于后续根据需求微调） ---
+    MAX_FIRST_PACKET_DELAY = 0.0   # 首包立即发，秒级
+    MAX_CHUNK_SIZE = 4096          # 后续包累积，2KB~4KB较优
+    FLUSH_INTERVAL = 0.10          # 100ms内至少强制发一次
+    # -------------------------------------
 
     def dump_chunk(content: str, final=False):
         openai_chunk = {
@@ -374,6 +374,13 @@ async def stream_response(dify_request: Dict, api_key: str, model: str) -> Async
         }
         return f"data: {ujson.dumps(openai_chunk)}\n\n"
 
+    buffer = bytearray()
+    chunk_buffer = []
+    chunk_len = 0
+    first_chunk_sent = False
+    last_flush = time.time()
+    first_chunk_time = 0.0
+
     async with model_manager.client.stream(
         'POST',
         endpoint,
@@ -384,38 +391,62 @@ async def stream_response(dify_request: Dict, api_key: str, model: str) -> Async
             yield dump_chunk("Stream error", final=True)
             return
 
-        # 优化：使用原生字节缓冲，高效分块流处理，不再用低效字符串拼接
-        buffer = bytearray()
+        # 高效chunk & 首包即发
         async for raw in rsp.aiter_bytes():
             if not raw:
                 continue
             buffer.extend(raw)
             # 拆分所有完整行，剩余半行保留待下次完整收集
-            *lines, buffer = buffer.split(b"\n")
-            for line in lines:
-                # 注意strip只处理bytes
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
                 line = line.strip()
                 if not line.startswith(b"data: "):
                     continue
                 try:
-                    # 仅data字段处理，安全解码出字符串
-                    chunk = ujson.loads(line[6:].decode("utf-8", "ignore"))
+                    chunk = ujson.loads(line[6:].decode("utf-8"))
                 except Exception:
                     continue
                 ev = chunk.get("event")
-                if ev == "message" or ev == "agent_message":
+                if ev in ("message", "agent_message"):
                     ans = chunk.get("answer", "")
                     if not ans:
                         continue
-                    buf.write(ans)
-                    if buf.tell() >= MAX_BUF_LEN or time.time() - last_flush > FLUSH_THRESHOLD:
-                        msg = buf.getvalue()
-                        buf.seek(0)
-                        buf.truncate(0)
-                        yield dump_chunk(msg)
-                        last_flush = time.time()
+                    chunk_buffer.append(ans)
+                    chunk_len += len(ans)
+                    now = time.time()
+                    # -- 首包策略 --
+                    if not first_chunk_sent:
+                        yield dump_chunk(ans)
+                        chunk_buffer.clear()
+                        chunk_len = 0
+                        first_chunk_sent = True
+                        first_chunk_time = now
+                        last_flush = now
+                        continue
+                    # -- 后续chunk（内容大于4K或者刷到时延阈值） --
+                    if (
+                        chunk_len >= MAX_CHUNK_SIZE or
+                        (now - last_flush > FLUSH_INTERVAL and chunk_buffer)
+                    ):
+                        content = "".join(chunk_buffer)
+                        yield dump_chunk(content)
+                        chunk_buffer.clear()
+                        chunk_len = 0
+                        last_flush = now
                 elif ev == "message_end":
-                    remainder = buf.getvalue()
+                    if chunk_buffer:
+                        content = "".join(chunk_buffer)
+                        yield dump_chunk(content)
+                        chunk_buffer.clear()
+                    yield dump_chunk("", final=True)
+                    yield "data: [DONE]\n\n"
+                    return
+
+        # 处理残留buffer（正常流结束后如仍有内容，补发）
+        if chunk_buffer:
+            yield dump_chunk("".join(chunk_buffer))
+        yield dump_chunk("", final=True)
+        yield "data: [DONE]\n\n"
 # =============================
 # 性能说明与单元测试建议
 # =============================
@@ -433,33 +464,7 @@ async def stream_response(dify_request: Dict, api_key: str, model: str) -> Async
 # 4. 如需极致精简亦可替换为 anyio.streams.AsyncLineReader，但推荐优先用本更透明、兼容且可追踪的做法。
 #
 # —— by OpenDify Code Assistant
-                    if remainder:
-                        yield dump_chunk(remainder)
-                    yield dump_chunk("", final=True)
-                    yield "data: [DONE]\n\n"
-                    return
-        # 补充：如果流正常结束，处理buffer中剩余内容
-        if buffer:
-            # 可能还有残留未处理的 data: 行
-            for line in buffer.split(b"\n"):
-                line = line.strip()
-                if not line.startswith(b"data: "):
-                    continue
-                try:
-                    chunk = ujson.loads(line[6:].decode("utf-8", "ignore"))
-                except Exception:
-                    continue
-                ev = chunk.get("event")
-                if ev == "message" or ev == "agent_message":
-                    ans = chunk.get("answer", "")
-                    if not ans:
-                        continue
-                    buf.write(ans)
-            remainder = buf.getvalue()
-            if remainder:
-                yield dump_chunk(remainder)
-            yield dump_chunk("", final=True)
-            yield "data: [DONE]\n\n"
+# 旧: 兼容性尾处理代码块，已被上方新实现统一收尾，不再需要
 
 
 @app.post("/v1/chat/completions")
