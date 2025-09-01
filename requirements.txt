@@ -1,7 +1,9 @@
 fastapi
-httpx
+httpx[http2]
 python-dotenv
 uvicorn
-ujson
+orjson
 openai
-asyncio
+cachetools
+langchain
+pydantic
