@@ -65,6 +65,3 @@ When the Dify model generates a response and identifies that it needs to call a 
 
 #### Streaming and Non-Streaming Support
 Function Calling is supported in both streaming and non-streaming responses. In streaming mode, the function call information is sent as a separate `delta` chunk.
-
-## Contributing & License
-[Insert contribution guidelines and license information if applicable]
