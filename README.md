@@ -38,10 +38,6 @@ pip install -r requirements.txt
     DIFY_API_BASE=https://your_dify_api_base
     ```
 
-1.  **配置 .env 文件：**
-
-    请复制 `.env.example` 文件并重命名为 `.env`，然后根据您的需求填写配置信息。
-
 2.  **运行 FastAPI 应用：**
 
     ```bash
