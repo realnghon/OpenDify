@@ -4,16 +4,13 @@ import time
 from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
 import httpx
 import os
-import orjson
+import ujson
 import io
-import gzip
 from typing import Dict, List, Optional, AsyncGenerator, Any
 from functools import lru_cache
 import base64
-import hashlib
 from datetime import datetime, timedelta
 
 # 配置日志
@@ -31,9 +28,6 @@ load_dotenv()
 VALID_API_KEYS = [key.strip() for key in os.getenv("VALID_API_KEYS", "").split(",") if key]
 CONVERSATION_MEMORY_MODE = int(os.getenv('CONVERSATION_MEMORY_MODE', '1'))
 DIFY_API_BASE = os.getenv("DIFY_API_BASE", "")
-if not DIFY_API_BASE:
-    logger.error("DIFY_API_BASE environment variable is not set!")
-    raise ValueError("DIFY_API_BASE is required")
 TIMEOUT = float(os.getenv("TIMEOUT", 30.0))
 
 # ========================
@@ -44,88 +38,6 @@ CONNECTION_TIMEOUT = TIMEOUT
 KEEPALIVE_TIMEOUT = 5.0
 BUFFER_SIZE = 8192
 TTL_APP_CACHE = timedelta(minutes=5)
-
-from collections import deque
-from threading import Lock
-import weakref
-from cachetools import TTLCache, LRUCache
-
-# ========================
-# 对象池优化
-# ========================
-class ObjectPool:
-    """通用对象池，减少频繁内存分配"""
-    def __init__(self, factory, max_size=100):
-        self.factory = factory
-        self.pool = deque(maxlen=max_size)
-        self.lock = Lock()
-    
-    def get(self):
-        with self.lock:
-            return self.pool.popleft() if self.pool else self.factory()
-    
-    def put(self, obj):
-        try:
-            if hasattr(obj, 'reset'):
-                obj.reset()
-        except Exception as e:
-            logger.warning(f"Failed to reset object in pool: {e}")
-        with self.lock:
-            self.pool.append(obj)
-
-class BufferPool:
-    """字节数组池，用于流式处理"""
-    def __init__(self, size=BUFFER_SIZE, max_count=50):
-        self.size = size
-        self.pool = deque([bytearray(size) for _ in range(max_count)], maxlen=max_count)
-        self.lock = Lock()
-    
-    def get(self):
-        with self.lock:
-            if self.pool:
-                buf = self.pool.popleft()
-                buf.clear()
-                return buf
-            return bytearray(self.size)
-    
-    def put(self, buf):
-        if len(buf) <= self.size * 2:  # 避免过大的buffer占用内存
-            with self.lock:
-                self.pool.append(buf)
-
-# 全局对象池
-buffer_pool = BufferPool()
-chunk_list_pool = ObjectPool(lambda: [], max_size=50)
-
-class CacheManager:
-    """缓存管理器，支持多层缓存策略"""
-    def __init__(self):
-        # 请求级缓存（较小，但命中率高）
-        self.request_cache = LRUCache(maxsize=1000)
-        # 应用信息缓存（TTL缓存）
-        self.app_cache = TTLCache(maxsize=200, ttl=300)  # 5分钟
-        # 为不同缓存使用独立的锁，提高并发性能
-        self.request_lock = Lock()
-        self.app_lock = Lock()
-    
-    def get_request_cache(self, key):
-        with self.request_lock:
-            return self.request_cache.get(key)
-    
-    def set_request_cache(self, key, value):
-        with self.request_lock:
-            self.request_cache[key] = value
-    
-    def get_app_cache(self, key):
-        with self.app_lock:
-            return self.app_cache.get(key)
-    
-    def set_app_cache(self, key, value):
-        with self.app_lock:
-            self.app_cache[key] = value
-
-# 全局缓存管理器
-cache_manager = CacheManager()
 
 # 预编译零宽字符映射表
 _CHAR_MAP = {
@@ -147,7 +59,7 @@ class DifyModelManager:
         self.api_keys = []
         self.name_to_api_key = {}
         self.api_key_to_name = {}
-        # 移除旧的_app_cache，使用全局缓存管理器
+        self._app_cache = {}  # api_key -> (app_name, cached_time)
 
         # HTTP长客户端，全局复用连接池
         limits = httpx.Limits(
@@ -155,11 +67,9 @@ class DifyModelManager:
             max_connections=CONNECTION_POOL_SIZE,
             keepalive_expiry=KEEPALIVE_TIMEOUT,
         )
-        # 启用HTTP/2支持
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout=CONNECTION_TIMEOUT),
             limits=limits,
-            http2=True,  # 启用HTTP/2
         )
         self.load_api_keys()
 
@@ -170,10 +80,11 @@ class DifyModelManager:
 
     async def fetch_app_info(self, api_key: str) -> Optional[str]:
         try:
-            # 使用新的缓存管理器
-            cached_name = cache_manager.get_app_cache(api_key)
-            if cached_name:
-                return cached_name
+            now = datetime.utcnow()
+            if api_key in self._app_cache:
+                cached_name, cached_time = self._app_cache[api_key]
+                if now - cached_time < TTL_APP_CACHE:
+                    return cached_name
 
             headers = {
                 "Authorization": f"Bearer {api_key}",
@@ -187,7 +98,7 @@ class DifyModelManager:
             if rsp.status_code == 200:
                 app_info = rsp.json()
                 app_name = app_info.get("name", "Unknown App")
-                cache_manager.set_app_cache(api_key, app_name)
+                self._app_cache[api_key] = (app_name, now)
                 return app_name
             else:
                 logger.error(f"Fetch app info failed: {rsp.status_code}")
@@ -197,33 +108,17 @@ class DifyModelManager:
             return None
 
     async def refresh_model_info(self):
-        """异步刷新模型映射，使用并行处理和重试机制"""
+        """异步刷新模型映射"""
         self.name_to_api_key.clear()
         self.api_key_to_name.clear()
 
-        # 使用asyncio.gather并行处理多个请求
-        async def fetch_with_retry(key, max_retries=3):
-            for attempt in range(max_retries):
-                try:
-                    return await self.fetch_app_info(key)
-                except Exception as e:
-                    if attempt == max_retries - 1:
-                        logger.error(f"Failed to fetch app info for key {key[:8]}... after {max_retries} attempts: {e}")
-                        return None
-                    await asyncio.sleep(0.1 * (attempt + 1))  # 指数退避
-            return None
-
-        # 并行处理所有API密钥
-        tasks = [fetch_with_retry(key) for key in self.api_keys]
-        names = await asyncio.gather(*tasks, return_exceptions=True)
-        
+        tasks = [self.fetch_app_info(key) for key in self.api_keys]
+        names = await asyncio.gather(*tasks)
         for key, name in zip(self.api_keys, names):
-            if name and not isinstance(name, Exception):
+            if name:
                 self.name_to_api_key[name] = key
                 self.api_key_to_name[key] = name
                 logger.debug(f"Mapped app '{name}' to key: {key[:8]}...")
-            elif isinstance(name, Exception):
-                logger.error(f"Exception for key {key[:8]}...: {name}")
 
     def get_api_key(self, model: str) -> Optional[str]:
         return self.name_to_api_key.get(model)
@@ -253,10 +148,6 @@ class DifyModelManager:
 # --------------------------
 model_manager = DifyModelManager()
 app = FastAPI(title="Dify to OpenAI API Proxy", version="2.0-optimized")
-
-# 添加gzip压缩中间件（必须在CORS之前添加）
-app.add_middleware(GZipMiddleware, minimum_size=1000)  # 超过1KB的响应才压缩
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -264,23 +155,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-# 生成请求的缓存键
-def generate_cache_key(openai_request: Dict, model: str) -> str:
-    """生成请求的缓存键"""
-    # 移除可能变化的字段，只保留影响响应的关键字段
-    cache_data = {
-        "model": model,
-        "messages": openai_request.get("messages", []),
-        "functions": openai_request.get("functions", []),
-        "function_call": openai_request.get("function_call"),
-        "temperature": openai_request.get("temperature", 1.0),
-        "max_tokens": openai_request.get("max_tokens"),
-        "user": openai_request.get("user", "default_user")
-    }
-    cache_str = orjson.dumps(cache_data, sort_keys=True).decode()
-    return hashlib.md5(cache_str.encode()).hexdigest()
 
 
 # --------------------------
@@ -344,79 +218,6 @@ def decode_conversation_id(content: str) -> Optional[str]:
         return None
 
 
-def format_functions_for_dify(functions: List[Dict], function_call: Optional[Dict] = None) -> str:
-    """将 OpenAI functions 转换为 Dify 可理解的文本格式"""
-    functions_text = "你是一个能够调用函数的AI助手。以下是可用的函数列表：\n\n"
-    
-    for func in functions:
-        name = func.get("name", "")
-        description = func.get("description", "")
-        parameters = func.get("parameters", {})
-        
-        functions_text += f"函数名: {name}\n"
-        functions_text += f"描述: {description}\n"
-        
-        if parameters.get("properties"):
-            functions_text += "参数:\n"
-            for param_name, param_info in parameters["properties"].items():
-                param_type = param_info.get("type", "string")
-                param_desc = param_info.get("description", "")
-                required = param_name in parameters.get("required", [])
-                req_text = "（必需）" if required else "（可选）"
-                functions_text += f"  - {param_name} ({param_type}){req_text}: {param_desc}\n"
-        functions_text += "\n"
-    
-    if function_call:
-        if isinstance(function_call, dict) and function_call.get("name"):
-            functions_text += f"请使用 {function_call['name']} 函数来处理用户请求。\n\n"
-        elif function_call == "auto":
-            functions_text += "请根据用户请求选择合适的函数进行调用。\n\n"
-    
-    functions_text += "当你需要调用函数时，请使用以下 JSON 格式：\n"
-    functions_text += "```json\n{\"function_call\": {\"name\": \"函数名\", \"arguments\": \"参数JSON字符串\"}}\n```\n\n"
-    
-    return functions_text
-
-
-import re
-import json
-
-# 预编译正则表达式，提高性能
-_FUNCTION_CALL_PATTERN = re.compile(r'```json\s*({.*?})\s*```', re.DOTALL)
-
-def parse_function_call_from_response(content: str) -> Optional[Dict]:
-    """从 Dify 响应中解析 function call"""
-    # 使用预编译的正则表达式
-    matches = _FUNCTION_CALL_PATTERN.findall(content)
-    
-    for match in matches:
-        try:
-            data = json.loads(match)
-            if "function_call" in data:
-                func_call = data["function_call"]
-                if "name" in func_call and "arguments" in func_call:
-                    # 解析 arguments 字符串
-                    args_str = func_call["arguments"]
-                    if isinstance(args_str, str):
-                        try:
-                            args = json.loads(args_str)
-                        except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse function arguments: {args_str}")
-                            args = {}
-                    else:
-                        args = args_str
-                    
-                    return {
-                        "name": func_call["name"],
-                        "arguments": json.dumps(args) if args else "{}"
-                    }
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON in function call: {e}")
-            continue
-    
-    return None
-
-
 # --------------------------
 # 自定义异常
 # --------------------------
@@ -456,8 +257,6 @@ def transform_openai_to_dify(openai_request: Dict, endpoint: str) -> Optional[Di
 
     messages = openai_request.get("messages", [])
     stream = openai_request.get("stream", False)
-    functions = openai_request.get("functions", [])
-    function_call = openai_request.get("function_call")
     system_content, user_query = "", ""
 
     # 提取system
@@ -501,15 +300,6 @@ def transform_openai_to_dify(openai_request: Dict, endpoint: str) -> Optional[Di
                 user_query = f"<history>\n{history_txt}\n</history>\n\n用户当前问题: {user_query}"
         elif system_content:
             user_query = f"系统指令: {system_content}\n\n用户问题: {user_query}"
-        
-        # 处理 function calling
-        if functions:
-            functions_text = format_functions_for_dify(functions, function_call)
-            if system_content:
-                user_query = f"系统指令: {system_content}\n\n{functions_text}\n\n用户问题: {user_query}"
-            else:
-                user_query = f"{functions_text}\n\n用户问题: {user_query}"
-        
         return {
             "inputs": {},
             "query": user_query,
@@ -518,7 +308,7 @@ def transform_openai_to_dify(openai_request: Dict, endpoint: str) -> Optional[Di
         }
 
 
-def stream_transform(dify_response: Dict, model: str, stream: bool, has_functions: bool = False) -> Dict:
+def stream_transform(dify_response: Dict, model: str, stream: bool) -> Dict:
     if stream:
         return dify_response
 
@@ -529,12 +319,6 @@ def stream_transform(dify_response: Dict, model: str, stream: bool, has_function
             if t.get("thought"):
                 answer = t.get("thought")
                 break
-    
-    # 检查是否有 function call
-    function_call = None
-    if has_functions and answer:
-        function_call = parse_function_call_from_response(answer)
-    
     if CONVERSATION_MEMORY_MODE == 2:
         conversation_id = dify_response.get("conversation_id", "")
         history = dify_response.get("conversation_history", [])
@@ -542,40 +326,27 @@ def stream_transform(dify_response: Dict, model: str, stream: bool, has_function
             msg.get("role") == "assistant" and decode_conversation_id(msg.get("content", ""))
             for msg in history
         )
-        if conversation_id and not has_id and not function_call:
+        if conversation_id and not has_id:
             answer += encode_conversation_id(conversation_id)
             logger.debug(f"Appended encoded conversation_id to answer")
 
-    response = {
+    return {
         "id": dify_response.get("message_id", ""),
         "object": "chat.completion",
         "created": dify_response.get("created", int(time.time())),
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": answer if not function_call else None
-            },
-            "finish_reason": "function_call" if function_call else "stop"
+            "message": {"role": "assistant", "content": answer},
+            "finish_reason": "stop"
         }]
     }
-    
-    # 如果有 function call，添加到 message 中
-    if function_call:
-        response["choices"][0]["message"]["function_call"] = function_call
-        # 移除 JSON 代码块，保留其他内容
-        cleaned_content = _FUNCTION_CALL_PATTERN.sub('', answer).strip()
-        if cleaned_content:
-            response["choices"][0]["message"]["content"] = cleaned_content
-    
-    return response
 
 
 # --------------------------
 # 核心路由 - /chat/completions
 # --------------------------
-async def stream_response(dify_request: Dict, api_key: str, model: str, has_functions: bool = False) -> AsyncGenerator[str, None]:
+async def stream_response(dify_request: Dict, api_key: str, model: str) -> AsyncGenerator[str, None]:
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -589,146 +360,93 @@ async def stream_response(dify_request: Dict, api_key: str, model: str, has_func
     FLUSH_INTERVAL = 0.10          # 100ms内至少强制发一次
     # -------------------------------------
 
-    def dump_chunk(content: str, final=False, function_call=None):
-        chunk_data = {
+    def dump_chunk(content: str, final=False):
+        openai_chunk = {
             "id": message_id,
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": model,
             "choices": [{
                 "index": 0,
-                "delta": {},
-                "finish_reason": None
+                "delta": {"content": content} if not final else {},
+                "finish_reason": "stop" if final else None
             }]
         }
-        
-        if function_call:
-            chunk_data["choices"][0]["delta"]["function_call"] = function_call
-            chunk_data["choices"][0]["finish_reason"] = "function_call"
-        elif final:
-            chunk_data["choices"][0]["finish_reason"] = "stop"
-        elif content:
-            chunk_data["choices"][0]["delta"]["content"] = content
-        
-        return f"data: {orjson.dumps(chunk_data).decode()}\n\n"
+        return f"data: {ujson.dumps(openai_chunk)}\n\n"
 
-    # 使用对象池获取buffer和chunk_buffer
-    buffer = buffer_pool.get()
-    chunk_buffer = chunk_list_pool.get()
-    
-    try:
-        chunk_len = 0
-        first_chunk_sent = False
-        last_flush = time.time()
-        first_chunk_time = 0.0
-        full_response = ""  # 用于检测 function call
+    buffer = bytearray()
+    chunk_buffer = []
+    chunk_len = 0
+    first_chunk_sent = False
+    last_flush = time.time()
+    first_chunk_time = 0.0
 
-        async with model_manager.client.stream(
-            'POST',
-            endpoint,
-            json=dify_request,
-            headers=headers,
-        ) as rsp:
-            if rsp.status_code != 200:
-                error_detail = f"HTTP {rsp.status_code}"
-                try:
-                    error_content = await rsp.aread()
-                    error_detail += f": {error_content.decode()[:200]}"  # 限制错误消息长度
-                except Exception:
-                    pass
-                logger.error(f"Dify API error: {error_detail}")
-                yield dump_chunk(f"Stream error: {error_detail}", final=True)
-                return
+    async with model_manager.client.stream(
+        'POST',
+        endpoint,
+        json=dify_request,
+        headers=headers,
+    ) as rsp:
+        if rsp.status_code != 200:
+            yield dump_chunk("Stream error", final=True)
+            return
 
-            # 高效chunk & 首包即发
-            async for raw in rsp.aiter_bytes():
-                if not raw:
+        # 高效chunk & 首包即发
+        async for raw in rsp.aiter_bytes():
+            if not raw:
+                continue
+            buffer.extend(raw)
+            # 拆分所有完整行，剩余半行保留待下次完整收集
+            while b"\n" in buffer:
+                line, buffer = buffer.split(b"\n", 1)
+                line = line.strip()
+                if not line.startswith(b"data: "):
                     continue
-                buffer.extend(raw)
-                # 拆分所有完整行，剩余半行保留待下次完整收集
-                while b"\n" in buffer:
-                    line_end = buffer.find(b"\n")
-                    line = buffer[:line_end]
-                    buffer[:] = buffer[line_end + 1:]
-                    line = line.strip()
-                    if not line.startswith(b"data: "):
+                try:
+                    chunk = ujson.loads(line[6:].decode("utf-8"))
+                except Exception:
+                    continue
+                ev = chunk.get("event")
+                if ev in ("message", "agent_message"):
+                    ans = chunk.get("answer", "")
+                    if not ans:
                         continue
-                    try:
-                        chunk = orjson.loads(line[6:])
-                    except (orjson.JSONDecodeError, ValueError) as e:
-                        logger.warning(f"Failed to parse JSON chunk: {e}")
+                    chunk_buffer.append(ans)
+                    chunk_len += len(ans)
+                    now = time.time()
+                    # -- 首包策略 --
+                    if not first_chunk_sent:
+                        yield dump_chunk(ans)
+                        chunk_buffer.clear()
+                        chunk_len = 0
+                        first_chunk_sent = True
+                        first_chunk_time = now
+                        last_flush = now
                         continue
-                    ev = chunk.get("event")
-                    if ev in ("message", "agent_message"):
-                        ans = chunk.get("answer", "")
-                        if not ans:
-                            continue
-                        full_response += ans  # 累积完整响应
-                        chunk_buffer.append(ans)
-                        chunk_len += len(ans)
-                        now = time.time()
-                        # -- 首包策略 --
-                        if not first_chunk_sent:
-                            yield dump_chunk(ans)
-                            chunk_buffer.clear()
-                            chunk_len = 0
-                            first_chunk_sent = True
-                            first_chunk_time = now
-                            last_flush = now
-                            continue
-                        # -- 后续chunk（内容大于4K或者刷到时延阈值） --
-                        if (
-                            chunk_len >= MAX_CHUNK_SIZE or
-                            (now - last_flush > FLUSH_INTERVAL and chunk_buffer)
-                        ):
-                            content = "".join(chunk_buffer)
-                            yield dump_chunk(content)
-                            chunk_buffer.clear()
-                            chunk_len = 0
-                            last_flush = now
-                    elif ev == "message_end":
-                        # 检查是否有 function call
-                        function_call = None
-                        if has_functions and full_response:
-                            function_call = parse_function_call_from_response(full_response)
-                        
-                        if chunk_buffer:
-                            content = "".join(chunk_buffer)
-                            if function_call:
-                                # 移除 JSON 代码块
-                                content = _FUNCTION_CALL_PATTERN.sub('', content).strip()
-                            if content:
-                                yield dump_chunk(content)
-                            chunk_buffer.clear()
-                        
-                        if function_call:
-                            yield dump_chunk("", function_call=function_call)
-                        else:
-                            yield dump_chunk("", final=True)
-                        yield "data: [DONE]\n\n"
-                        return
+                    # -- 后续chunk（内容大于4K或者刷到时延阈值） --
+                    if (
+                        chunk_len >= MAX_CHUNK_SIZE or
+                        (now - last_flush > FLUSH_INTERVAL and chunk_buffer)
+                    ):
+                        content = "".join(chunk_buffer)
+                        yield dump_chunk(content)
+                        chunk_buffer.clear()
+                        chunk_len = 0
+                        last_flush = now
+                elif ev == "message_end":
+                    if chunk_buffer:
+                        content = "".join(chunk_buffer)
+                        yield dump_chunk(content)
+                        chunk_buffer.clear()
+                    yield dump_chunk("", final=True)
+                    yield "data: [DONE]\n\n"
+                    return
 
-            # 处理残留buffer（正常流结束后如仍有内容，补发）
-            if chunk_buffer:
-                yield dump_chunk("".join(chunk_buffer))
-            yield dump_chunk("", final=True)
-            yield "data: [DONE]\n\n"
-    except asyncio.TimeoutError:
-        logger.error("Stream request timeout")
-        yield dump_chunk("Request timeout", final=True)
+        # 处理残留buffer（正常流结束后如仍有内容，补发）
+        if chunk_buffer:
+            yield dump_chunk("".join(chunk_buffer))
+        yield dump_chunk("", final=True)
         yield "data: [DONE]\n\n"
-    except httpx.ConnectError as e:
-        logger.error(f"Connection error: {e}")
-        yield dump_chunk("Connection error", final=True)
-        yield "data: [DONE]\n\n"
-    except Exception as e:
-        logger.exception(f"Unexpected error in stream_response: {e}")
-        yield dump_chunk(f"Internal error: {str(e)}", final=True)
-        yield "data: [DONE]\n\n"
-    finally:
-        # 归还对象到池中
-        buffer_pool.put(buffer)
-        chunk_list_pool.put(chunk_buffer)
 # =============================
 # 性能说明与单元测试建议
 # =============================
@@ -753,20 +471,8 @@ async def stream_response(dify_request: Dict, api_key: str, model: str, has_func
 async def chat_completions(request: Request, api_key: str = Depends(verify_api_key)):
     try:
         openai_request = await request.json()
-        logger.info(f"Received request: {orjson.dumps(openai_request).decode()}")
+        logger.info(f"Received request: {ujson.dumps(openai_request, ensure_ascii=False)}")
         model = openai_request.get("model", "claude-3-5-sonnet-v2")
-        functions = openai_request.get("functions", [])
-        has_functions = bool(functions)
-        stream = openai_request.get("stream", False)
-        
-        # 检查缓存（非流式请求且无function calling）
-        if not stream and not has_functions:
-            cache_key = generate_cache_key(openai_request, model)
-            cached_response = cache_manager.get_request_cache(cache_key)
-            if cached_response:
-                logger.debug(f"Cache hit for request: {cache_key[:8]}...")
-                return JSONResponse(cached_response)
-        
         dify_key = model_manager.get_api_key(model)
         if not dify_key:
             msg = f"Model {model} not configured"
@@ -776,9 +482,10 @@ async def chat_completions(request: Request, api_key: str = Depends(verify_api_k
         if not dify_req:
             raise HTTPException(status_code=400, detail={"error": {"message": "Invalid format"}})
 
+        stream = openai_request.get("stream", False)
         if stream:
             return StreamingResponse(
-                stream_response(dify_req, dify_key, model, has_functions),
+                stream_response(dify_req, dify_key, model),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache, no-transform",
@@ -795,21 +502,9 @@ async def chat_completions(request: Request, api_key: str = Depends(verify_api_k
             raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
         dify_resp = resp.json()
-        openai_resp = stream_transform(dify_resp, model, stream=False, has_functions=has_functions)
-        
-        # 将响应放入缓存（非流式且无function calling）
-        if not stream and not has_functions:
-            cache_manager.set_request_cache(cache_key, openai_resp)
-            logger.debug(f"Cached response for request: {cache_key[:8]}...")
-        
+        openai_resp = stream_transform(dify_resp, model, stream=False)
         return JSONResponse(openai_resp)
 
-    except asyncio.TimeoutError:
-        logger.error("Non-stream request timeout")
-        raise HTTPException(status_code=504, detail={"error": {"message": "Request timeout", "type": "timeout"}})
-    except httpx.ConnectError as e:
-        logger.error(f"Connection error in non-stream request: {e}")
-        raise HTTPException(status_code=503, detail={"error": {"message": "Service unavailable", "type": "connection_error"}})
     except HTTPException:
         raise
     except Exception as e:

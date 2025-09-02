@@ -4,17 +4,15 @@
 
 ## 简介
 
-本项目是一个使用 FastAPI 构建的代理应用，可将 Dify 的 API 转换为 OpenAI 兼容的 API，**并扩展支持 Function Calling**。此代理服务允许您使用 OpenAI 客户端与 Dify 服务进行交互，并在两者交互时进行协议转换。此版本在性能上进行了多方面优化，包括：
+本项目是一个 FastAPI 应用，用于将 Dify API 转换为 OpenAI 兼容的 API。此代理服务允许您使用 OpenAI 客户端与 Dify 服务进行交互，并在两者交互时进行协议转换。此版本在性能上进行了优化，包括：
 
-- ✅ 使用 `orjson` 替换标准 `json`，显著提升 JSON 序列化速度。
-- ✅ 全局复用 `AsyncClient`，避免重复创建连接池。
-- ✅ 流式响应使用 `io.StringIO`，提高内存处理效率。
-- ✅ 预编译 Base64 映射表，减少运行时开销。
-- ✅ TTL 缓存应用信息，减少对 Dify API 的频繁调用。
+1.  使用 `ujson` 替换标准 `json`，提升 JSON 序列化速度。
+2.  全局复用 `AsyncClient`，避免重复创建连接池。
+3.  流式响应使用 `io.StringIO` 提升内存效率。
+4.  预编译 Base64 映射表，减少运行时开销。
+5.  TTL 缓存应用信息，减少频繁 API 调用。
 
-## 快速开始
-
-### 依赖安装
+## 依赖安装
 
 使用 `pip` 安装项目依赖：
 
@@ -22,49 +20,71 @@
 pip install -r requirements.txt
 ```
 
-### 环境配置
+## 运行
 
-请复制 `.env.example` 文件并重命名为 `.env`，然后根据您的需求填写相应的配置信息。示例如下：
+1.  **配置环境变量：**
 
-```env
-VALID_API_KEYS=your_api_key_1,your_api_key_2
-DIFY_API_BASE=https://your_dify_api_base
-CONVERSATION_MEMORY_MODE=1
-TIMEOUT=30.0
-SERVER_HOST=127.0.0.1
-SERVER_PORT=8000
+    *   `VALID_API_KEYS`:  有效的 Dify API Key 列表，多个 Key 使用逗号分隔。
+    *   `CONVERSATION_MEMORY_MODE`:  会话记忆模式，默认为 `1`。
+    *   `DIFY_API_BASE`:  Dify API 的基础 URL。
+    *   `TIMEOUT`:  请求超时时间，默认为 `30.0` 秒。
+    *   `SERVER_HOST`:  服务监听的 Host，默认为 `127.0.0.1`。
+    *   `SERVER_PORT`:  服务监听的端口，默认为 `8000`。
+
+    您可以通过 `.env` 文件或系统环境变量来配置这些参数。例如：
+
+    ```
+    VALID_API_KEYS=your_api_key_1,your_api_key_2
+    DIFY_API_BASE=https://your_dify_api_base
+    ```
+
+1.  **配置 .env 文件：**
+
+    请复制 `.env.example` 文件并重命名为 `.env`，然后根据您的需求填写配置信息。
+
+2.  **运行 FastAPI 应用：**
+
+    ```bash
+    python -m uvicorn app:app --reload --host 127.0.0.1 --port 1234
+    ```
+
+    将 `127.0.0.1` 替换为您希望监听的 Host，`1234` 替换为您希望监听的端口。
+
+    将 `127.0.0.1` 替换为您希望监听的 Host，`1234` 替换为您希望监听的端口。
+
+## API Key 配置
+
+需要在环境变量 `VALID_API_KEYS` 中配置 Dify API Key。
+
+## API 使用示例
+
+您可以使用以下 `test.py` 文件来验证服务是否启动成功：
+
+```python
+import openai
+from openai import OpenAI
+
+# 创建OpenAI客户端实例
+client = OpenAI(
+    base_url="http://127.0.0.1:1234/v1",
+    api_key="sk-abc123"  # 可以使用任意值
+)
+
+# 使用新的API调用方式
+response = client.chat.completions.create(
+    model="AgentCoder",  # 注意：使用 Dify 应用的名称
+    messages=[
+        {"role": "user", "content": "你好"}
+    ],
+    stream=True
+)
+
+for chunk in response:
+    delta = chunk.choices[0].delta
+    if hasattr(delta, 'content') and delta.content is not None:
+        print(delta.content, end="", flush=True)
 ```
 
-### 运行应用
+请确保将 `base_url` 修改为您的服务地址，并根据需要修改 `api_key` 和 `model` 参数。
 
-使用 `uvicorn` 运行 FastAPI 应用：
-
-```bash
-python -m uvicorn app:app --reload --host 127.0.0.1 --port 8000
-```
-
-将 `127.0.0.1` 替换为您希望监听的主机名，将 `8000` 替换为您希望监听的端口号。
-
-## 使用说明
-
-### API Key 配置
-在环境变量 `VALID_API_KEYS` 中配置有效的 Dify API Key。
-
-### API 使用示例
-请在 `test.py` 文件中查看 API 使用示例。
-
-## 特性详解
-
-### 工作原理
-
-#### 函数定义转换
-当 OpenAI 客户端发送包含 `functions` 参数的请求时，OpenDify 会将这些函数定义（包括名称、描述和参数）转换为 Dify 模型能够理解的文本格式。这些信息会作为系统指令的一部分，附加到 Dify 请求的 `query` 中。
-
-#### 函数调用解析
-Dify 模型在生成响应时，如果识别出需要调用函数，会按照特定 JSON 格式在响应中输出函数调用指令。OpenDify 会从 Dify 的响应中解析出这些 `function_call`，并将其转换回 OpenAI 兼容的格式。
-
-#### 流式与非流式支持
-Function Calling 在流式和非流式响应中均受支持。在流式模式下，函数调用信息会以独立的 `delta` 块形式发送。
-
-## 贡献与许可
-[请在此处插入贡献指南和许可信息]
+运行 `test.py` 文件，如果能够正确输出结果，则说明服务启动成功。

@@ -20,6 +20,18 @@ wheels/
 .installed.cfg
 *.egg
 
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
 
 # Logs
 *.log
@@ -29,3 +41,24 @@ logs/
 .env
 .env.local
 .env.*.local
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Distribution
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Project specific
+*.pid
+*.sock 
