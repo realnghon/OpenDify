@@ -4,83 +4,87 @@
 
 ## 简介
 
-本项目是一个 FastAPI 应用，用于将 Dify API 转换为 OpenAI 兼容的 API。此代理服务允许您使用 OpenAI 客户端与 Dify 服务进行交互，并在两者交互时进行协议转换。此版本在性能上进行了优化，包括：
+一个高性能的 FastAPI 代理服务，将 Dify API 转换为 OpenAI 兼容的 API。让您能够使用 OpenAI 客户端无缝对接 Dify 服务。
 
-1.  使用 `ujson` 替换标准 `json`，提升 JSON 序列化速度。
-2.  全局复用 `AsyncClient`，避免重复创建连接池。
-3.  流式响应使用 `io.StringIO` 提升内存效率。
-4.  预编译 Base64 映射表，减少运行时开销。
-5.  TTL 缓存应用信息，减少频繁 API 调用。
+### ⚡ 性能特性
 
-## 依赖安装
+- **高速 JSON 处理**: 使用 `ujson` 提升序列化性能
+- **连接池优化**: 全局复用 HTTP 连接，支持 HTTP/2
+- **智能缓存**: TTL 缓存减少重复 API 调用
+- **流式优化**: 首包即发，降低响应延迟
+- **内存高效**: 优化缓冲区管理和内存使用
 
-使用 `pip` 安装项目依赖：
+## 快速开始
+
+### 1. 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 运行
+### 2. 配置环境
 
-1.  **配置环境变量：**
+创建 `.env` 文件：
 
-    *   `VALID_API_KEYS`:  有效的 Dify API Key 列表，多个 Key 使用逗号分隔。
-    *   `CONVERSATION_MEMORY_MODE`:  会话记忆模式，默认为 `1`。
-    *   `DIFY_API_BASE`:  Dify API 的基础 URL。
-    *   `TIMEOUT`:  请求超时时间，默认为 `30.0` 秒。
-    *   `SERVER_HOST`:  服务监听的 Host，默认为 `127.0.0.1`。
-    *   `SERVER_PORT`:  服务监听的端口，默认为 `8000`。
+```env
+VALID_API_KEYS=your_dify_api_key_1,your_dify_api_key_2
+DIFY_API_BASE=https://your_dify_api_base
+TIMEOUT=30.0
+SERVER_HOST=127.0.0.1
+SERVER_PORT=8000
+```
 
-    您可以通过 `.env` 文件或系统环境变量来配置这些参数。例如：
+### 3. 启动服务
 
-    ```
-    VALID_API_KEYS=your_api_key_1,your_api_key_2
-    DIFY_API_BASE=https://your_dify_api_base
-    ```
+```bash
+# 开发环境
+python -m uvicorn app:app --reload --host 127.0.0.1 --port 8000
 
-2.  **运行 FastAPI 应用：**
+# 生产环境
+python app.py
+```
 
-    ```bash
-    python -m uvicorn app:app --reload --host 127.0.0.1 --port 1234
-    ```
-
-    将 `127.0.0.1` 替换为您希望监听的 Host，`1234` 替换为您希望监听的端口。
-
-    将 `127.0.0.1` 替换为您希望监听的 Host，`1234` 替换为您希望监听的端口。
-
-## API Key 配置
-
-需要在环境变量 `VALID_API_KEYS` 中配置 Dify API Key。
-
-## API 使用示例
-
-您可以使用以下 `test.py` 文件来验证服务是否启动成功：
+## 使用示例
 
 ```python
-import openai
 from openai import OpenAI
 
-# 创建OpenAI客户端实例
 client = OpenAI(
-    base_url="http://127.0.0.1:1234/v1",
-    api_key="sk-abc123"  # 可以使用任意值
+    base_url="http://127.0.0.1:8000/v1",
+    api_key="your_api_key"
 )
 
-# 使用新的API调用方式
+# 流式对话
 response = client.chat.completions.create(
-    model="AgentCoder",  # 注意：使用 Dify 应用的名称
-    messages=[
-        {"role": "user", "content": "你好"}
-    ],
+    model="你的Dify应用名称",
+    messages=[{"role": "user", "content": "你好"}],
     stream=True
 )
 
 for chunk in response:
-    delta = chunk.choices[0].delta
-    if hasattr(delta, 'content') and delta.content is not None:
-        print(delta.content, end="", flush=True)
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="")
 ```
 
-请确保将 `base_url` 修改为您的服务地址，并根据需要修改 `api_key` 和 `model` 参数。
+## 配置说明
 
-运行 `test.py` 文件，如果能够正确输出结果，则说明服务启动成功。
+| 环境变量 | 说明 | 默认值 |
+|---------|------|-------|
+| `VALID_API_KEYS` | Dify API 密钥列表（逗号分隔） | - |
+| `DIFY_API_BASE` | Dify API 基础地址 | - |
+| `CONVERSATION_MEMORY_MODE` | 会话记忆模式 | 1 |
+| `TIMEOUT` | 请求超时时间（秒） | 30.0 |
+| `SERVER_HOST` | 服务监听地址 | 127.0.0.1 |
+| `SERVER_PORT` | 服务监听端口 | 8000 |
+
+## API 端点
+
+- `POST /v1/chat/completions` - 聊天补全接口
+- `GET /v1/models` - 获取可用模型列表
+
+## 性能建议
+
+- **生产部署**: 使用 `uvicorn` 的生产模式启动
+- **Linux/Mac**: 自动启用 `uvloop` 事件循环优化（Windows 下会自动跳过）
+- **高并发**: 调整连接池大小和超时配置
+- **内存优化**: 定期清理缓存，避免内存泄漏

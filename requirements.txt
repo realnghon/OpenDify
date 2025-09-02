@@ -1,7 +1,8 @@
 fastapi
-httpx
-python-dotenv
-uvicorn
+uvicorn[standard]
+httpx[http2]
 ujson
+python-dotenv
 openai
-asyncio
+psutil
+typing-extensions

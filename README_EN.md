@@ -4,81 +4,87 @@
 
 ## Introduction
 
-This project is a FastAPI application that converts the Dify API into an OpenAI-compatible API. This proxy service allows you to interact with the Dify service using an OpenAI client, while performing protocol conversion between the two. This version has been optimized for performance, including:
+A high-performance FastAPI proxy service that converts Dify API to OpenAI-compatible API. Seamlessly integrate with Dify services using OpenAI clients.
 
-1.  Using `ujson` to replace the standard `json`, improving JSON serialization speed.
-2.  Globally reusing `AsyncClient` to avoid repeatedly creating connection pools.
-3.  Using `io.StringIO` for streaming responses to improve memory efficiency.
-4.  Precompiling Base64 mapping tables to reduce runtime overhead.
-5.  TTL caching of application information to reduce frequent API calls.
+### ⚡ Performance Features
 
-## Dependency Installation
+- **Fast JSON Processing**: Using `ujson` for enhanced serialization performance
+- **Connection Pool Optimization**: Global HTTP connection reuse with HTTP/2 support
+- **Smart Caching**: TTL caching to reduce redundant API calls
+- **Streaming Optimization**: First-packet-send strategy for reduced latency
+- **Memory Efficiency**: Optimized buffer management and memory usage
 
-Use `pip` to install project dependencies:
+## Quick Start
+
+### 1. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Running
+### 2. Environment Configuration
 
-1.  **Configure environment variables:**
+Create a `.env` file:
 
-    *   `VALID_API_KEYS`: A list of valid Dify API keys, separated by commas.
-    *   `CONVERSATION_MEMORY_MODE`: Conversation memory mode, defaults to `1`.
-    *   `DIFY_API_BASE`: The base URL of the Dify API.
-    *   `TIMEOUT`: Request timeout duration, defaults to `30.0` seconds.
-    *   `SERVER_HOST`: The host the service listens on, defaults to `127.0.0.1`.
-    *   `SERVER_PORT`: The port the service listens on, defaults to `8000`.
+```env
+VALID_API_KEYS=your_dify_api_key_1,your_dify_api_key_2
+DIFY_API_BASE=https://your_dify_api_base
+TIMEOUT=30.0
+SERVER_HOST=127.0.0.1
+SERVER_PORT=8000
+```
 
-    You can configure these parameters through a `.env` file or system environment variables. For example:
+### 3. Start Service
 
-    ```
-    VALID_API_KEYS=your_api_key_1,your_api_key_2
-    DIFY_API_BASE=https://your_dify_api_base
-    ```
+```bash
+# Development
+python -m uvicorn app:app --reload --host 127.0.0.1 --port 8000
 
-2.  **Run the FastAPI application:**
+# Production
+python app.py
+```
 
-    ```bash
-    python -m uvicorn app:app --reload --host 127.0.0.1 --port 1234
-    ```
-
-    Replace `127.0.0.1` with the host you want to listen on, and `1234` with the port you want to listen on.
-
-## API Key Configuration
-
-You need to configure the Dify API key in the environment variable `VALID_API_KEYS`.
-
-## API Usage Example
-
-You can use the following `test.py` file to verify that the service has started successfully:
+## Usage Example
 
 ```python
-import openai
 from openai import OpenAI
 
-# Create an OpenAI client instance
 client = OpenAI(
-    base_url="http://127.0.0.1:1234/v1",
-    api_key="sk-abc123"  # You can use any value
+    base_url="http://127.0.0.1:8000/v1",
+    api_key="your_api_key"
 )
 
-# Use the new API call method
+# Streaming chat
 response = client.chat.completions.create(
-    model="AgentCoder",  # Note: Use the name of your Dify application
-    messages=[
-        {"role": "user", "content": "Hello"}
-    ],
+    model="YourDifyAppName",
+    messages=[{"role": "user", "content": "Hello"}],
     stream=True
 )
 
 for chunk in response:
-    delta = chunk.choices[0].delta
-    if hasattr(delta, 'content') and delta.content is not None:
-        print(delta.content, end="", flush=True)
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="")
 ```
 
-Make sure to modify the `base_url` to your service address, and modify the `api_key` and `model` parameters as needed.
+## Configuration
 
-Run the `test.py` file. If the result is output correctly, it means that the service has started successfully.
+| Environment Variable | Description | Default |
+|---------------------|-------------|--------|
+| `VALID_API_KEYS` | Dify API keys list (comma-separated) | - |
+| `DIFY_API_BASE` | Dify API base URL | - |
+| `CONVERSATION_MEMORY_MODE` | Conversation memory mode | 1 |
+| `TIMEOUT` | Request timeout (seconds) | 30.0 |
+| `SERVER_HOST` | Service host | 127.0.0.1 |
+| `SERVER_PORT` | Service port | 8000 |
+
+## API Endpoints
+
+- `POST /v1/chat/completions` - Chat completions interface
+- `GET /v1/models` - List available models
+
+## Performance Tips
+
+- **Production Deployment**: Use `uvicorn` production mode for optimal performance
+- **Linux/Mac**: Automatically enables `uvloop` event loop optimization (skipped on Windows)
+- **High Concurrency**: Adjust connection pool size and timeout configurations
+- **Memory Optimization**: Regular cache cleanup to prevent memory leaks
