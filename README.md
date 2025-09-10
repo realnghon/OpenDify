@@ -4,54 +4,63 @@
 
 ## 简介
 
-一个高性能的 FastAPI 代理服务，将 Dify API 转换为 OpenAI 兼容的 API。让您能够使用 OpenAI 客户端无缝对接 Dify 服务。
+OpenDify 是一个 **高性能的 FastAPI 代理服务**，可以将 [Dify](https://dify.ai) API 转换为 **OpenAI 兼容格式 API**。
+借助 OpenDify，您可以用任何 OpenAI 风格的 SDK 或客户端直接访问 Dify 应用，无需修改现有基于 OpenAI 的代码或工作流。
 
-### ⚡ 性能特性
+适用于希望在保持 OpenAI 客户端生态的同时，接入 Dify 多模态 AI 能力的开发者。
 
-- **高速 JSON 处理**: 使用 `ujson` 提升序列化性能
-- **连接池优化**: 全局复用 HTTP 连接，支持 HTTP/2
-- **智能缓存**: TTL 缓存减少重复 API 调用
-- **流式优化**: 首包即发，降低响应延迟
-- **内存高效**: 优化缓冲区管理和内存使用
+---
 
-## 快速开始
+## ✨ 功能特性
+
+- **完全 OpenAI API 兼容** —— 支持 `/v1/chat/completions` 与 `/v1/models` 接口
+- **支持流式响应** —— 从 Dify 到客户端的低延迟数据流转发
+- **多模态消息支持** —— 可处理 `text` 与 `image_url` 类型消息
+- **工具调用格式转换** —— 将 Dify 工具调用事件转换为 OpenAI 函数调用格式
+- **自动文件上传** —— 支持远程 URL 和 Base64 图片上传至 Dify
+- **全局 HTTP 连接池** —— 保持长连接并启用 HTTP/2，提升吞吐量
+- **环境变量可配置** —— 通过 `.env` 文件完全控制运行参数
+
+---
+
+## 🛠 快速开始
 
 ### 1. 安装依赖
-
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 2. 配置环境
-
-创建 `.env` 文件：
-
+在项目根目录创建 `.env` 文件：
 ```env
-VALID_API_KEYS=your_dify_api_key_1,your_dify_api_key_2
-DIFY_API_BASE=https://your_dify_api_base
+VALID_API_KEYS=your_proxy_access_key_1,your_proxy_access_key_2
+DIFY_API_KEYS=your_dify_api_key
+DIFY_API_BASE=https://your_dify_instance_base
 TIMEOUT=30.0
 SERVER_HOST=127.0.0.1
 SERVER_PORT=8000
 ```
 
 ### 3. 启动服务
-
+**开发模式**
 ```bash
-# 开发环境
 python -m uvicorn app:app --reload --host 127.0.0.1 --port 8000
+```
 
-# 生产环境
+**生产模式**
+```bash
 python app.py
 ```
 
-## 使用示例
+---
 
+## 🚀 使用示例 (Python OpenAI SDK)
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://127.0.0.1:8000/v1",
-    api_key="your_api_key"
+    api_key="your_proxy_access_key"
 )
 
 # 流式对话
@@ -66,25 +75,36 @@ for chunk in response:
         print(chunk.choices[0].delta.content, end="")
 ```
 
-## 配置说明
+---
 
-| 环境变量 | 说明 | 默认值 |
-|---------|------|-------|
-| `VALID_API_KEYS` | Dify API 密钥列表（逗号分隔） | - |
-| `DIFY_API_BASE` | Dify API 基础地址 | - |
-| `CONVERSATION_MEMORY_MODE` | 会话记忆模式 | 1 |
-| `TIMEOUT` | 请求超时时间（秒） | 30.0 |
-| `SERVER_HOST` | 服务监听地址 | 127.0.0.1 |
-| `SERVER_PORT` | 服务监听端口 | 8000 |
+## 🔧 配置项说明
 
-## API 端点
+| 环境变量               | 说明                                  | 默认值       |
+|------------------------|---------------------------------------|--------------|
+| `VALID_API_KEYS`       | 允许访问代理的 API Key 列表           | `-`          |
+| `DIFY_API_KEYS`        | 用于请求 Dify API 的密钥               | `-`          |
+| `DIFY_API_BASE`        | Dify API 的基础 URL                   | `-`          |
+| `TIMEOUT`              | 请求超时时间（秒）                     | `30.0`       |
+| `SERVER_HOST`          | 代理服务监听主机                       | `127.0.0.1`  |
+| `SERVER_PORT`          | 代理服务监听端口                       | `8000`       |
 
-- `POST /v1/chat/completions` - 聊天补全接口
-- `GET /v1/models` - 获取可用模型列表
+---
 
-## 性能建议
+## 📡 API 接口
 
-- **生产部署**: 使用 `uvicorn` 的生产模式启动
-- **Linux/Mac**: 自动启用 `uvloop` 事件循环优化（Windows 下会自动跳过）
-- **高并发**: 调整连接池大小和超时配置
-- **内存优化**: 定期清理缓存，避免内存泄漏
+- **`POST /v1/chat/completions`** — 聊天补全接口（流式、非流式均支持）
+- **`GET /v1/models`** — 获取 Dify 应用映射到 OpenAI 模型 ID 的列表
+
+---
+
+## 📈 性能提示
+
+- **流式优化** —— 首包即发，降低用户等待延迟
+- **连接池复用** —— 启用 HTTP/2 提升高并发性能
+- **工具调用安全解析** —— 使用 Pydantic 确保 `tool_calls` 格式与 OpenAI 兼容
+- **缓存策略** —— TTL 缓存减少重复的 API 请求
+
+---
+
+## 📜 许可
+MIT — 免费使用、修改和分发
